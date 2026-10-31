@@ -1,4 +1,4 @@
--- Luau | glx_aimbot_v3_13.lua | Roblox executor (Synapse-style env)
+-- Luau | glx_aimbot_v3_14.lua | Roblox executor (Synapse-style env)
 -- =====================================================================
 -- [v3.12] MERGE: BehindTP (เทเลพอร์ตด้านหลังเป้า) รวมเข้าไฟล์เดียวกับ GLX aimbot
 --     - ปุ่ม "TP" ลอยบนจอ (ลากย้ายได้, ป้าย 🔒 ล็อกการลาก) — แตะ = เทเลพอร์ตทันที
@@ -105,7 +105,7 @@
 --         ลิมิต 31 Highlight ที่จอวาดได้ → ป้ายใหม่ไม่ถูกวาดเงียบ ๆ = ESP หายทั้งระบบ
 --         → ทำลายป้ายของ entry เก่าทุกครั้ง + กวาดป้ายกำพร้าทุก 5 วิ
 --     (2) cache ผู้เล่นเน่า: เกมสลับ Humanoid/RootPart ในตัวละครเดิม = ref เก่าตายค้าง
---         → คนนั้นล็อคไม่ได้ตลอด — getComponents ตรวจ ref เน่าแล้วหาใหม่เองทุกเฟรม (self-heal)
+--         → คนนั้นล็อคไม่ได้ตลอด — getComponentsตรวจ ref เน่าแล้วหาใหม่เองทุกเฟรม (self-heal)
 --     (3) watchdog: loop ESP/aim ตายเงียบ ๆ = ฟื้น connection เองใน ≤2 วิ + pcall ครอบทุก tick
 --         (ผู้เล่นประหลาดตัวเดียวพังไม่ลากทั้งระบบ) + error ขึ้นแถบสถานะ 6 วิ
 --     (4) Weapon Check default OFF — ปืน viewmodel (Ground War) ไม่ใช่ Tool รีรันแล้วลืมกด
@@ -133,8 +133,6 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
--- [v3.1] executor บางตัวรันสคริปต์ก่อนผู้เล่น spawn = LocalPlayer ยัง nil → โค้ดตายก่อน
--- สร้าง UI โดยไม่มี error ที่อ่านง่าย — รอได้สูงสุด 10 วิ ยังไม่เจอ = แจ้งชัดเจนให้รันใหม่
 if not LocalPlayer then
         for _ = 1, 100 do
                 task.wait(0.1)
@@ -142,7 +140,7 @@ if not LocalPlayer then
                 if LocalPlayer then break end
         end
 end
--- [v3.11] ข้อความไทยเป็นตารางเลข (XOR 0x37+i%16) — กันคลิปบอร์ด Android/Delta ตัด UTF-8 กลางสาย
+
 local function T(t)
 	local out = {}
 	for i = 1, #t do
@@ -167,11 +165,8 @@ if not LocalPlayer then
         return
 end
 
-local FALLBACK_SPEED = 3000 -- [BUG 9 FIX] ค่า fallback เดียวทั้งไฟล์
+local FALLBACK_SPEED = 3000
 
--- ==========================================
--- 1. CLEANUP MANAGER (Complete Lifecycle)
--- ==========================================
 local CleanupManager = {
         Connections = {},
         Instances = {},
@@ -185,7 +180,6 @@ function CleanupManager:AddConn(name, conn)
         return conn
 end
 
--- [v3.8] ถอด connection ออกจากทะเบียน — ใช้กับ conn อายุสั้น (จับ slider) กันทะเบียนบวม
 function CleanupManager:RemoveConn(name)
         local conn = self.Connections[name]
         if conn then
@@ -212,9 +206,6 @@ end
 
 function CleanupManager:CleanAll()
         getgenv().Glx_Running = false
-
-        -- [v3.1] pcall ทุกรายการ — ของชิ้นเดียวที่เสีย (Drawing ถูกทำลายไปแล้ว ฯลฯ)
-        -- เดิมทำให้ CleanAll ตายค้างรายการ = รอบรันใหม่พังตั้งแต่บรรทัดล้างของเก่า
         for _, conn in pairs(self.Connections) do pcall(conn.Disconnect, conn) end
         for _, inst in pairs(self.Instances) do pcall(inst.Destroy, inst) end
         for _, draw in pairs(self.Drawings) do pcall(draw.Remove, draw) end
@@ -225,17 +216,11 @@ function CleanupManager:CleanAll()
         table.clear(self.Drawings)
         table.clear(self.CustomCleanups)
 
-        -- [v3.9] ปล่อย identity ให้ sweeper loop (กวาด ESP ทุก 5 วิ / TargetStates ทุก 10 วิ)
-        -- รู้ว่ารอบนี้ตายแล้ว — เดิม Glx_Cleanup ยังชี้ manager นี้ต่อหลัง unload = loop ตื่นมา
-        -- ทำงานเปล่า ๆ ตลอดไปจนกว่าจะรันรอบใหม่ (ทรัพยากรรั่วเงียบ ๆ หลังถอดสคริปต์)
         if getgenv().Glx_Cleanup == CleanupManager then
                 getgenv().Glx_Cleanup = nil
         end
 end
 
--- [v3.1] ล้างรอบเก่าแบบกันพัง — รอบเก่าเสีย/ครึ่ง ๆ กลาง ๆ ต้องไม่ลากรอบใหม่ลงไปด้วย
--- [Glx] เคลียร์รอบเก่าได้ทั้งชื่อเดิม (SnyX_* จากสคริปต์เวอร์ชั่นก่อนหน้า) และชื่อใหม่ (Glx_*)
--- กันรีรันสคริปต์ Glx ทับรอบเก่า SnyX แล้วรอบเก่ายังวิ่งค้าง = ESP ซ้อนสองชั้น/เป้าสั่น
 if getgenv().SnyX_Cleanup and type(getgenv().SnyX_Cleanup.CleanAll) == "function" then
         pcall(getgenv().SnyX_Cleanup.CleanAll, getgenv().SnyX_Cleanup)
 end
@@ -246,23 +231,20 @@ getgenv().Glx_Cleanup = CleanupManager
 getgenv().Glx_Running = true
 print(("[GLX v3.11] tick=%.3f step1: cleanup OK, decoding UI strings"):format(os.clock()))
 
--- ==========================================
--- 2. STATE (Global Configuration)
--- ==========================================
 local State = {
         Aimbot = true,
         TeamCheck = true,
         WallCheck = false,
         Prediction = true,
-        PredReactivity = 1.5, -- [v2.3] ไวของ EMA ความเร่ง (τ = 0.10/ค่านี้ วิ.) — 0.2 = อืด, 3.0 = ไวมาก
-        PredMaxSlew = 3.0,    -- [v2.1] เพดานเปลี่ยน intercept time (วินาทีต่อวินาที)
-        TrackBoost = 1.5,     -- [v3.5] gain ความเร็วไล่ตามมุมคลาด (°/s ที่เพิ่มขึ้นต่อ ° ที่คลาด; 0 = ปิด)
-        LagComp = true,       -- [v2.2] ชดเชย lag ของ smoothing ด้วยการเล็งนำหน้าตามความเร็วเป้า
-        DragSwitch = true,    -- [v2.5] สะบัดจอเพื่อสลับเป้า — พักเล็งชั่วคราวให้กล้องตามมือผู้เล่น
-        FlickSpeed = 90,     -- [v2.7] ความเร็วปัด (°/s) ที่นับเป็น "สะบัดสลับเป้า" — ต่ำ = ไวต่อปัดเบา ๆ
-        FreeSteer = true,     -- [v2.7] ลากหนีเป้า = กล้องผ่อนแรงดึงตามมือ ไม่ตีค้อน (ไม่เหนียว)
-        SwitchAssist = true, -- [v3.7] ชี้ใกล้ศัตรูอื่นชัดเจน = สลับเป้าให้เอง ไม่ต้องสะบัดจอ
-        WeaponCheck = false,       -- [v3.8] default OFF ให้ตรงคลุม v3.4 — เกมที่ปืนเป็น Tool จริงค่อยเปิด (เดิม true = เกมปืน viewmodel อย่าง Ground War aimbot เงียบตั้งแต่โหลด)
+        PredReactivity = 1.5,
+        PredMaxSlew = 3.0,
+        TrackBoost = 1.5,
+        LagComp = true,
+        DragSwitch = true,
+        FlickSpeed = 90,
+        FreeSteer = true,
+        SwitchAssist = true,
+        WeaponCheck = false,
         TargetPartMode = "Head",
         PingCompensation = true,
         DropIsMultiplier = true,
@@ -274,21 +256,16 @@ local State = {
         ShowFOV = false,
         ESP = true,
         ESPName = true,
-        Teleport = true -- [v3.12] ระบบเทเลพอร์ต (BehindTP) — toggle ในเมนูปิด/เปิดได้
+        Teleport = false
 }
 
 local function getCamera() return Workspace.CurrentCamera end
-
 local DEFAULT_FOV = 70
 
--- [v2.4] ระดับซูมเทียบ FOV มาตรฐาน — ซูม 4x = FOV ~17.5 → zoomScale 4
--- ใช้สเกลทุกตัวคุมให้พฤติกรรม "บนจอ" เท่าเดิมไม่ว่าซูมเท่าไร
 local function getZoomScale(camera)
         return math.clamp(DEFAULT_FOV / math.max(camera.FieldOfView, 1), 1, 5)
 end
 
--- [v3.11-PERF] ping อัปเดตฝั่งเกม ~1Hz — เดิม pcall+GetNetworkPing ทุกเฟรมตอนล็อคเป้า
--- = โทรค่าเดิมซ้ำ 60-144 ครั้ง/วิ บน SoC มือถือ (Delta) — แคชครึ่งวิพอ
 local cachedPing, pingUntil = 0.025, 0
 local function getPing()
         if not LocalPlayer then return 0.025 end
@@ -301,41 +278,29 @@ local function getPing()
         return cachedPing
 end
 
--- ==========================================
--- 3. MATH HELPERS
--- ==========================================
--- [v2.9] เวกเตอร์ "มีตัวเลขจริง" ทุกแกน (ไม่ใช่ NaN/Inf) — ตัวเลขพังจาก replication
--- ถ้าลอดไปถึง camera CFrame = เรนเดอร์คำนวณพังทั้งระบบ เกมล้มได้ — ใช้เป็นด่านแรกของทุกเส้นทาง
 local function isFiniteVec3(v)
         if typeof(v) ~= "Vector3" then return false end
         local x, y, z = v.X, v.Y, v.Z
-        if x ~= x or y ~= y or z ~= z then return false end -- NaN ≠ NaN
+        if x ~= x or y ~= y or z ~= z then return false end
         return x < math.huge and x > -math.huge
                 and y < math.huge and y > -math.huge
                 and z < math.huge and z > -math.huge
 end
 
 local function safeUnit(v3)
-        if not isFiniteVec3(v3) then return nil end -- [v2.9] เดิม NaN/Inf ลอดผ่าน (NaN <= 1e-6 เป็น false)
+        if not isFiniteVec3(v3) then return nil end
         local mag = v3.Magnitude
         if not (mag > 1e-6 and mag < math.huge) then return nil end
         local unit = v3 / mag
         return isFiniteVec3(unit) and unit or nil
 end
 
--- ==========================================
--- 3.5 FORWARD DECLARATIONS + LOAD STATUS (v3.1)
--- ==========================================
--- [v3.1] UI สร้าง "ก่อน" ระบบอื่นทั้งหมด — ตัวแปร/ฟังก์ชันที่ UI callback ใช้แต่นิยามอยู่
--- ท้ายไฟล์ ต้องประกาศล่วงหน้าตรงนี้ (เดิมสคริปต์พังก่อนถึงบรรทัดสร้าง UI = เมนูไม่ขึ้นเลย
--- ทั้งที่โค้ดส่วนใหญ่ปกติ — ย้าย UI ขึ้นหน้า = เมนูขึ้นเสมอ ไม่ว่าระบบอื่นจะเป็นอย่างไร)
-local WeaponService            -- นิยามจริงหัวข้อ 4 — UI callback เรียกตอนกดเท่านั้น
-local ESPService               -- [v3.10] นิยามจริงหัวข้อ 8 — ESP toggle callback เรียกตอนกดเท่านั้น
-local clearESPVisuals          -- [v3.10] เก็บป้าย ESP ตอนผู้ใช้ปิด toggle (นิยามจริงหัวข้อ 8)
-local setStickyStatus          -- [v3.4] นิยามจริงท้ายไฟล์ (หัวข้อ 11) — ข้อความติดแถบสถานะ ไม่โดน FPS ทับ
-local TPService                -- [v3.12] นิยามจริงหัวข้อ 3.9 — toggle Teleport เรียกตอนกดเท่านั้น
+local WeaponService
+local ESPService
+local clearESPVisuals
+local setStickyStatus
+local TPService
 
--- บันทึกสถานะการโหลด: โชว์ทั้ง console และแถบล่างของเมนู (setStatusFn ถูกต่อเมื่อ UI สร้างเสร็จ)
 local setStatusFn = nil
 local function setGlxStatus(msg)
         print("[GLX] " .. tostring(msg))
@@ -343,19 +308,12 @@ local function setGlxStatus(msg)
                 pcall(setStatusFn, tostring(msg))
         end
 end
--- ==========================================
--- 3.6 UI CONSTRUCTION (v3.1 — สร้าง UI "ก่อน" ระบบอื่นทั้งหมด)
--- ==========================================
--- เดิม UI อยู่ท้ายไฟล์ — ระบบไหนพังตอนโหลดก่อนถึงบรรทัดนี้ = เมนูไม่ขึ้นทั้งที่โค้ด
--- เกือบทั้งหมดปกติ (อาการ "รันสคริปต์ไม่ติด UI ไม่ขึ้น") ตอนนี้ย้ายมาไว้ต้นไฟล์:
--- ไม่ว่าระบบอื่นจะพังแค่ไหน เมนูต้องขึ้นเสมอ + แถบสถานะในเมนูบอกว่าโหลดถึงไหน
+
 print(("[GLX v3.11] tick=%.3f step2: building UI"):format(os.clock()))
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "Glx_UI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.DisplayOrder = 999999
--- [v3.1] parent แบบยืดหยุ่น 3 ชั้น (gethui → CoreGui → PlayerGui) — เดิมติด PlayerGui
--- ช่องเดียว ถ้าเกม/executor บล็อกหรือ WaitForChild ค้าง = UI ไม่ขึ้นเฉย ๆ
 do
         local parents = {}
         if type(gethui) == "function" then
@@ -382,8 +340,6 @@ CleanupManager:AddInstance("MainUI", ScreenGui)
 
 local ToggleBtn = Instance.new("TextButton")
 ToggleBtn.Size = UDim2.new(0, 45, 0, 45)
--- [Glx] ตำแหน่งพิกเซลเต็ม (เดิม 0.03/0.2 scale = ลงจุดทศนิยมบนจอส่วนใหญ่ → subpixel
--- rendering = ตัวอักษร "Glx" เบลอ) + ฟอนต์ GothamBold 18px คมชัดกว่า SourceSansBold 14px
 ToggleBtn.Position = UDim2.new(0, 28, 0, 130)
 ToggleBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 ToggleBtn.Text = "Glx"
@@ -399,12 +355,12 @@ btnCorner.Parent = ToggleBtn
 
 local btnStroke = Instance.new("UIStroke")
 btnStroke.Color = Color3.fromRGB(0, 255, 153)
-btnStroke.Thickness = 2 -- [Glx] เต็มพิกเซล — ขอบ 1.5 เรนเดอร์ anti-alias แล้วดูเบลอ
+btnStroke.Thickness = 2
 btnStroke.Parent = ToggleBtn
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Size = UDim2.new(0, 290, 0, 400)
-MainFrame.Position = UDim2.new(0, 220, 0, 140) -- [Glx] พิกเซลเต็ม กันข้อความในเมนูเบลอ (เดิม 0.15/0.25 scale)
+MainFrame.Position = UDim2.new(0, 220, 0, 140)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 MainFrame.Active = true
 MainFrame.Visible = false
@@ -418,20 +374,18 @@ local mainStroke = Instance.new("UIStroke")
 mainStroke.Color = Color3.fromRGB(45, 45, 45)
 mainStroke.Parent = MainFrame
 
--- [BUG 7 FIX] เลิกใช้ Draggable (deprecated + hijack input ทั้งเฟรม)
--- → manual drag เฉพาะ handle ที่กำหนด กด slider/toggle แล้วหน้าต่างไม่ขยับ
 local dragConnIndex = 0
 local function enableDrag(handle, target)
         local dragging = false
         local dragStart, startPos
-        local wasDragged = false -- [v3.8] เจสเตอร์ล่าสุดขยับ ≥6px = นับเป็น "ลาก" ไม่ใช่ click
+        local wasDragged = false
 
         dragConnIndex += 1
         CleanupManager:AddConn("DragBegan" .. dragConnIndex, handle.InputBegan:Connect(function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton1
                         or input.UserInputType == Enum.UserInputType.Touch then
                         dragging = true
-                        wasDragged = false -- [v3.8] เจสเตอร์ใหม่ เริ่มนับระยะใหม่
+                        wasDragged = false
                         dragStart = input.Position
                         startPos = target.Position
                 end
@@ -450,8 +404,7 @@ local function enableDrag(handle, target)
                 if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
                         or input.UserInputType == Enum.UserInputType.Touch) then
                         local delta = input.Position - dragStart
-                        if delta.Magnitude >= 6 then wasDragged = true end -- [v3.8]
-                        -- [Glx] ปัดปลายทางเป็นพิกเซลเต็ม — ลากแล้วตัวอักษรไม่เบลอ (จอสัมผัส delta เป็นทศนิยมได้)
+                        if delta.Magnitude >= 6 then wasDragged = true end
                         target.Position = UDim2.new(
                                 startPos.X.Scale, math.floor(startPos.X.Offset + delta.X + 0.5),
                                 startPos.Y.Scale, math.floor(startPos.Y.Offset + delta.Y + 0.5)
@@ -459,14 +412,13 @@ local function enableDrag(handle, target)
                 end
         end))
 
-        -- [v3.8] คืนตัวเช็ค "เจสเตอร์ล่าสุดเป็นการลาก" — ผู้เรียกใช้กรอง click หลังลาก
         return function() return wasDragged end
 end
 
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 35)
 TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-TitleBar.RichText = true -- [Glx] ไฮไลต์ชื่อ GLX ด้วยสีธีม
+TitleBar.RichText = true
 TitleBar.Text = "  <font color=\"#00FF99\">GLX</font> ADVANCED SYSTEM"
 TitleBar.TextColor3 = Color3.fromRGB(255, 255, 255)
 TitleBar.Font = Enum.Font.GothamBold
@@ -478,23 +430,19 @@ local titleCorner = Instance.new("UICorner")
 titleCorner.CornerRadius = UDim.new(0, 8)
 titleCorner.Parent = TitleBar
 
--- [v3.1] แถบสถานะการโหลด — ถ้าสคริปต์ตายกลางทาง ข้อความสุดท้ายค้างอยู่ = จุดพังเป๊ะ ๆ
--- ใช้รายงานอาการต่อได้ทันที (เทียบกับเดิม: ตายเงียบ ไม่รู้ว่าพังตรงไหน)
 local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, -12, 0, 16)
 StatusLabel.Position = UDim2.new(0, 6, 1, -20)
 StatusLabel.BackgroundTransparency = 1
 StatusLabel.Text = M2
-StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 153) -- [Glx] สีธีมเดียวกันทั้งเมนู
-StatusLabel.Font = Enum.Font.SourceSans -- คง SourceSans — ข้อความสถานะเป็นภาษาไทย (Gotham ไม่มี glyph ไทย)
+StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 153)
+StatusLabel.Font = Enum.Font.SourceSans
 StatusLabel.TextSize = 12
 StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 StatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
 StatusLabel.Parent = MainFrame
--- [v3.10-BUG] ทุกเส้นทางเขียนแถบสถานะต้องผ่านทะเบียนเดียว — เดิม setStickyStatus/setStatusFn
--- เขียน .Text ตรง ๆ ข้าม lastStatusText → FPS meter จำค่าเก่าผิด เขียนทับข้อความ sticky/error
--- ก่อนครบอายุ 6 วิ (เงื่อนไขเขียนซ้ำของ v3.9 ถูกต้องแล้ว แต่ทะเบียนค่าถูกข้าม)
-local lastStatusText, statusDirty = nil, true -- [v3.9] ย้ายขึ้น — ผู้ใช้ตัวแรกคือ setStatusFn
+
+local lastStatusText, statusDirty = nil, true
 local function applyStatusText(text)
         lastStatusText = tostring(text)
         statusDirty = true
@@ -504,17 +452,13 @@ setStatusFn = function(msg)
         applyStatusText(msg)
 end
 
--- [v3.8] เก็บตัวเช็คการลากของปุ่มก่อน connect click — ลากแล้วปล่อยบนปุ่ม = ไม่นับเป็น click
--- (เดิม MouseButton1Click ยิงทุกครั้งที่ลากปุ่มเสร็จ = เมนูเปิด/ปิดเอง)
 local toggleBtnWasDragged = nil
--- [v3.10] lastStatusText/statusDirty ย้ายไปประกาศที่ setStatusFn (ตัวเขียนกลุ่มแรก)
 ToggleBtn.MouseButton1Click:Connect(function()
         if toggleBtnWasDragged and toggleBtnWasDragged() then return end
         MainFrame.Visible = not MainFrame.Visible
-        statusDirty = true -- เปิดเมนูกลับมา = บังคับวาดข้อความล่าสุดหนึ่งครั้ง
+        statusDirty = true
 end)
 
--- ลากปุ่ม Glx ด้วยตัวปุ่ม / ลากหน้าต่างเฉพาะที่ TitleBar
 toggleBtnWasDragged = enableDrag(ToggleBtn, ToggleBtn)
 enableDrag(TitleBar, MainFrame)
 
@@ -534,7 +478,7 @@ UIList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
 end)
 
 local currentLayoutOrder = 0
-local sliderDragIndex = 0 -- [v3.8] นับเจสเตอร์ลาก slider — ตั้งชื่อ conn ใน CleanupManager ไม่ชนกัน
+local sliderDragIndex = 0
 
 local function createToggle(text, initialState, callback)
         currentLayoutOrder += 1
@@ -608,7 +552,7 @@ local function createModeSelector(text, modesArray, initialIndex, callback)
         local btn = Instance.new("TextButton")
         btn.Size = UDim2.new(0, 80, 0, 20)
         btn.Position = UDim2.new(1, -86, 0.5, -10)
-        btn.BackgroundColor3 = Color3.fromRGB(0, 115, 95) -- [Glx] เขียวเข้มแทนน้ำเงินเดิม
+        btn.BackgroundColor3 = Color3.fromRGB(0, 115, 95)
         btn.Text = modesArray[initialIndex]
         btn.TextColor3 = Color3.fromRGB(255, 255, 255)
         btn.Font = Enum.Font.SourceSansBold
@@ -677,7 +621,7 @@ local function createSlider(text, min, max, default, step, callback)
         local sliderFill = Instance.new("Frame")
         local initialRatio = math.clamp((default - min) / (max - min), 0, 1)
         sliderFill.Size = UDim2.new(initialRatio, 0, 1, 0)
-        sliderFill.BackgroundColor3 = Color3.fromRGB(0, 255, 153) -- [Glx] สีธีมเขียวนีออน
+        sliderFill.BackgroundColor3 = Color3.fromRGB(0, 255, 153)
         sliderFill.BorderSizePixel = 0
         sliderFill.Parent = sliderBar
 
@@ -691,8 +635,6 @@ local function createSlider(text, min, max, default, step, callback)
                         or input.UserInputType == Enum.UserInputType.Touch then
                         dragging = true
 
-                        -- [BUG 1 FIX] snap แล้วเก็บ float noise ทิ้ง
-                        -- เดิม: math.floor(x/step+0.5)*step ได้ 0.35000000000000003 โชว์บน label
                         local function update(inp)
                                 local ratio = math.clamp(
                                         (inp.Position.X - sliderBar.AbsolutePosition.X)
@@ -708,23 +650,23 @@ local function createSlider(text, min, max, default, step, callback)
                         update(input)
                         local moveConn, relConn
                         sliderDragIndex += 1
-                        local gestureId = "SliderDrag" .. sliderDragIndex -- [v3.8] ลงทะเบียนกับ CleanupManager
+                        local gestureId = "SliderDrag" .. sliderDragIndex
                         moveConn = UserInputService.InputChanged:Connect(function(moveInp)
                                 if dragging and (moveInp.UserInputType == Enum.UserInputType.MouseMovement
                                         or moveInp.UserInputType == Enum.UserInputType.Touch) then
                                         update(moveInp)
                                 end
                         end)
-                        CleanupManager:AddConn(gestureId .. "Move", moveConn) -- [v3.8]
+                        CleanupManager:AddConn(gestureId .. "Move", moveConn)
                         relConn = UserInputService.InputEnded:Connect(function(relInp)
                                 if relInp.UserInputType == Enum.UserInputType.MouseButton1
                                         or relInp.UserInputType == Enum.UserInputType.Touch then
                                         dragging = false
-                                        CleanupManager:RemoveConn(gestureId .. "Move") -- [v3.8] ตัดออกจากทะเบียน
-                                        CleanupManager:RemoveConn(gestureId .. "End")  -- [v3.8]
+                                        CleanupManager:RemoveConn(gestureId .. "Move")
+                                        CleanupManager:RemoveConn(gestureId .. "End")
                                 end
                         end)
-                        CleanupManager:AddConn(gestureId .. "End", relConn) -- [v3.8]
+                        CleanupManager:AddConn(gestureId .. "End", relConn)
                 end
         end)
 end
@@ -740,9 +682,7 @@ createToggle("Ping Compensation", State.PingCompensation, function(v) State.Ping
 
 createToggle("Drop Value Mode: Multiplier", State.DropIsMultiplier, function(v)
         State.DropIsMultiplier = v
-        -- [v3.8] ล้าง WeaponCache ก่อนอัปเดต — เดิมปืนที่ถืออยู่คืนค่าเก่าจาก cache จนกว่าจะ
-        -- re-equip = สลับโหมดแล้ว gravity/speed ไม่เปลี่ยน (toggle เงียบ)
-        if WeaponService then -- [v3.9] ไฟล์โหลดค้างครึ่งทาง = WeaponService ยัง nil กดปุ่มแล้วห้าม error เงียบ ๆ
+        if WeaponService then
                 if WeaponService.InvalidateCache then WeaponService:InvalidateCache() end
                 WeaponService:UpdateAuto()
         end
@@ -750,12 +690,11 @@ end)
 
 createToggle("Auto Weapon Speed", State.AutoBulletSpeed, function(v)
         State.AutoBulletSpeed = v
-        if WeaponService then WeaponService:UpdateAuto() end -- [v3.9] กันโหลดค้างครึ่งทาง
+        if WeaponService then WeaponService:UpdateAuto() end
 end)
 
 createToggle("ESP Wallhack", State.ESP, function(v)
         State.ESP = v
-        -- [v3.10] ปิด = เก็บป้ายทันที (เดิมป้ายค้างบนจอ — heartbeat early-return ไม่มีใครเก็บให้)
         if ESPService and clearESPVisuals and not v then clearESPVisuals(true, false) end
 end)
 createToggle("ESP Username", State.ESPName, function(v)
@@ -765,16 +704,15 @@ end)
 
 createSlider("Manual Bullet Speed", 500, 10000, State.BulletSpeed, 100, function(v)
         State.BulletSpeed = v
-        if WeaponService then WeaponService:UpdateManual() end -- [v3.9] กันโหลดค้างครึ่งทาง
+        if WeaponService then WeaponService:UpdateManual() end
 end)
 createSlider("Manual Gravity", 0, 500, State.BulletGravity, 10, function(v)
         State.BulletGravity = v
-        if WeaponService then WeaponService:UpdateManual() end -- [v3.9] กันโหลดค้างครึ่งทาง
+        if WeaponService then WeaponService:UpdateManual() end
 end)
 createSlider("Aim Speed", 0.05, 1, State.Smoothness, 0.05, function(v) State.Smoothness = v end)
 createSlider("Aimbot FOV Range", 50, 500, State.FOV, 10, function(v) State.FOV = v end)
 
--- [v2.1] Prediction tuning — ปรับสดระหว่างเกมได้
 createSlider("Pred Reactivity", 0.2, 3, State.PredReactivity, 0.05, function(v)
         State.PredReactivity = v
 end)
@@ -782,59 +720,49 @@ createSlider("Pred Max Slew (s/s)", 0.5, 10, State.PredMaxSlew, 0.5, function(v)
         State.PredMaxSlew = v
 end)
 
--- [v2.2] Tracking speed tuning — แก้อาการจุดเล็งตามช้า
 createToggle("Lag Comp", State.LagComp, function(v) State.LagComp = v end)
 createSlider("Catch-Up Boost", 0, 3, State.TrackBoost, 0.05, function(v)
         State.TrackBoost = v
 end)
 
--- [v2.5] drag-to-switch (สไลเดอร์ Snap Angle ถูกถอดออกใน v3.5 — มันทำให้การเล็งกระตุก)
 createToggle("Drag To Switch", State.DragSwitch, function(v) State.DragSwitch = v end)
 
--- [v2.7] สลับเป้าลื่น ไม่เหนียว: free steer + ความไวสะบัด
 createToggle("Free Steer", State.FreeSteer, function(v) State.FreeSteer = v end)
--- [v3.7] Switch Assist — สลับเป้าอัตโนมัติเมื่อชี้ใกล้เป้าอื่นชัดเจน (ไม่ต้องสะบัดจอ)
 createToggle("Switch Assist", State.SwitchAssist, function(v) State.SwitchAssist = v end)
 createSlider("Flick Speed (°/s)", 60, 300, State.FlickSpeed, 5, function(v)
         State.FlickSpeed = v
 end)
 
--- [v3.4] เช็ค "ถืออาวุธ" (มี Tool ในตัวละคร) — default OFF เพราะเกมอย่าง Ground War ทำปืนเป็น
--- viewmodel ไม่ใช่ Tool (เดิม default ON = รีรันสคริปต์แล้วลืมกด toggle aimbot จะเงียบทันที)
--- เกมที่ปืนเป็น Tool จริง และอยากให้เล็งเฉพาะตอนถือปืน → เปิด toggle นี้
 createToggle("Weapon Check", State.WeaponCheck, function(v)
         State.WeaponCheck = v
 end)
 
--- [v3.12] Teleport System (BehindTP) — เปิด/ปิดระบบเทเลพอร์ตทั้งหมด
--- ปิด = ซ่อนปุ่ม TP + ป้ายล็อกออกจากจอทันที (ค่าตำแหน่ง/ล็อกคงเดิมตอนเปิดกลับ)
 createToggle("Teleport System", State.Teleport, function(v)
         State.Teleport = v
         if TPService and TPService.setEnabled then TPService.setEnabled(v) end
-        if not v then setGlxStatus(M11) end -- แจ้งแถบสถานะว่าปิดแล้ว
+        if not v then setGlxStatus(M11) end
 end)
+if TPService and TPService.setEnabled then TPService.setEnabled(State.Teleport) end
 
--- [v3.1] UI พร้อม = จุดตรวจแรกของการโหลด — ถ้าแถบสถานะค้างข้อความนี้ = พัง "หลังจาก" UI
 setGlxStatus(M3)
 -- ==========================================
 -- 3.9 TELEPORT SYSTEM — BehindTP (merged from tp.txt, v3.12)
 -- ==========================================
--- แตะปุ่ม TP = เทเลพอร์ตไปหลังศัตรู (10 studs, หันหน้าเข้าหาหลังเป้า)
--- toggle "Teleport System" ควบคุมเปิด/ปิด — ปิด = เก็บปุ่มออกจากจอทันที
 do
-        local DIST = 10    -- ระยะหลังเป้า (studs)
-        local TAP_SLOP = 8 -- px ที่นิ้วขยับได้ ยังนับเป็น "แตะ" ไม่ใช่ "ลาก"
+        local DIST = 10
+        local TAP_SLOP = 8
 
         local tpGui = Instance.new("ScreenGui")
         tpGui.Name = "Glx_BehindTP"
         tpGui.ResetOnSpawn = false
-        tpGui.DisplayOrder = 999998 -- ใต้เมนู GLX หนึ่งชั้น
+        tpGui.DisplayOrder = 999998
         tpGui.Parent = ScreenGui.Parent or game:GetService("CoreGui")
+        tpGui.Enabled = false
         CleanupManager:AddInstance("TPGui", tpGui)
 
         local box = Instance.new("Frame")
         box.Size = UDim2.fromOffset(44, 44)
-        box.Position = UDim2.new(0.4, 0, 0.5, 0)
+        box.Position = UDim2.new(0, 84, 0, 130)
         box.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
         box.BackgroundTransparency = 0.2
         box.BorderSizePixel = 0
@@ -866,7 +794,6 @@ do
                 local cam = Workspace.CurrentCamera
                 if not cam then return nil end
 
-                -- 1) raycast จากกลางจอ (จุดเล็ง) หาตัวละครตรง ๆ
                 local rayParams = RaycastParams.new()
                 rayParams.FilterType = Enum.RaycastFilterType.Exclude
                 local myChar = LocalPlayer.Character
@@ -874,7 +801,6 @@ do
                 local hit = Workspace:Raycast(cam.CFrame.Position, cam.CFrame.LookVector * 1000, rayParams)
                 local model = hit and hit.Instance:FindFirstAncestorOfClass("Model")
 
-                -- 2) ไม่โดนตัวละคร = เอาศัตรูที่อยู่ใกล้จุดเล็งที่สุดบนจอแทน
                 if not (model and model:FindFirstChildOfClass("Humanoid")) then
                         local vp = cam.ViewportSize / 2
                         local best, bestDist
@@ -897,7 +823,6 @@ do
                         return best
                 end
 
-                -- โดนตัวละครตรง ๆ: เช็คว่าเป็นศัตรู + ยังมีชีวิต
                 local plr = Players:GetPlayerFromCharacter(model)
                 if plr and plr ~= LocalPlayer and not (LocalPlayer.Team ~= nil and plr.Team == LocalPlayer.Team) then
                         local hum = model:FindFirstChildOfClass("Humanoid")
@@ -915,8 +840,7 @@ do
                         setGlxStatus(M9)
                         return
                 end
-                local spot = target.CFrame * CFrame.new(0, 0, DIST) -- local +Z = หลังเป้า
-                -- หันหน้าไปทางเดียวกับศัตรู (ตัด pitch ของเป้าออก กันตัวเอียง)
+                local spot = target.CFrame * CFrame.new(0, 0, DIST)
                 local lv = target.CFrame.LookVector
                 local face = Vector3.new(lv.X, 0, lv.Z)
                 face = face.Magnitude > 0.05 and face.Unit or Vector3.new(0, 0, -1)
@@ -924,8 +848,6 @@ do
                 setGlxStatus(M10)
         end
 
-        -- drag + tap: จับเริ่มที่ปุ่ม TP, ขยับ/ปล่อยผ่าน UserInputService
-        -- → ลากต่อได้แม้นิ้วเลื่อนออกนอกกล่อง + ลากแล้วไม่ยิงเทเลพอร์ต
         local locked = false
         local dragInput, dragStart, startPos
 
@@ -949,7 +871,6 @@ do
         CleanupManager:AddConn("TPDragEnded", UserInputService.InputEnded:Connect(function(io)
                 if io ~= dragInput then return end
                 dragInput = nil
-                -- แตะ (ขยับ <= TAP_SLOP) = เทเลพอร์ต · ทำงานแม้ตอนล็อก (ล็อกกั้นแค่การลาก)
                 if (io.Position - dragStart).Magnitude <= TAP_SLOP then
                         teleport()
                 end
@@ -966,10 +887,11 @@ do
                 end
         }
 end
+
 -- ==========================================
 -- 4. WEAPON SERVICE (Cached Weapon Stats)
 -- ==========================================
-WeaponService = { -- [v3.1] ประกาศล่วงหน้าแล้วที่หัวข้อ 3.5 (UI callback เรียกตอนกดเท่านั้น)
+WeaponService = {
         Speed = FALLBACK_SPEED,
         Gravity = workspace.Gravity
 }
@@ -983,7 +905,6 @@ end
 
 local WeaponCache = setmetatable({}, { __mode = "k" })
 
--- [v3.8] ล้าง cache สถิติปืน — ใช้ตอนสลับ DropIsMultiplier (เดิมไม่มีทางล้าง = toggle เงียบ)
 function WeaponService:InvalidateCache()
         table.clear(WeaponCache)
 end
@@ -995,8 +916,6 @@ function WeaponService:UpdateAuto()
         local tool = char and char:FindFirstChildOfClass("Tool")
 
         if not tool then
-                -- [v3.8] Auto mode ไม่มีข้อมูลปืน = ใช้ FALLBACK_SPEED จริงตามคลุม BUG 9 FIX
-                -- (เดิมดิ่งไปอ่าน State.BulletSpeed=5000 ทั้งที่คลุมบอก fallback เดียวทั้งไฟล์ = 3000)
                 self.Speed = FALLBACK_SPEED
                 self.Gravity = workspace.Gravity
                 return
@@ -1015,7 +934,6 @@ function WeaponService:UpdateAuto()
         local acsSettings = tool:FindFirstChild("ACS_Settings")
                 or tool:FindFirstChild("Settings") or tool:FindFirstChild("Config")
 
-        -- [v3.8] ค่าเริ่มก่อนอ่าน config = fallback เดียวกันทั้งไฟล์ (เดิม 5000 สับสนกับ FALLBACK_SPEED)
         local speed, gravity = FALLBACK_SPEED, workspace.Gravity
 
         if acsSettings and acsSettings:IsA("ModuleScript") then
@@ -1039,8 +957,6 @@ function WeaponService:UpdateAuto()
         return
 end
 
--- [BUG 2 FIX] hook config-watcher ครั้งเดียวต่อ Tool ผ่าน weak set
--- denominators: ทุกครั้งที่ re-equip ปืนเดิม จะ connect ChildAdded ใหม่ทับกองจน connection รั่ว
 local HookedTools = setmetatable({}, { __mode = "k" })
 local CONFIG_HINTS = { "acs_settings", "settings", "config" }
 
@@ -1089,13 +1005,12 @@ end
 -- ==========================================
 local VisibilityService = {}
 
--- [PERF] ใช้ RaycastParams ตัวเดียวทั้งสคริปต์ + scratch table
 local RayParams = RaycastParams.new()
 RayParams.FilterType = Enum.RaycastFilterType.Exclude
 RayParams.IgnoreWater = true
 
 local ScratchFilter = {}
-local lastFilterCount, lastFilterFirst = -1, nil -- [v3.9] signature ของ filter ล่าสุดที่ push เข้า RayParams แล้ว
+local lastFilterCount, lastFilterFirst = -1, nil
 
 function VisibilityService:CheckVisibility(targetCharacter, pierceCount, specificPart)
         local camera = getCamera()
@@ -1112,7 +1027,6 @@ function VisibilityService:CheckVisibility(targetCharacter, pierceCount, specifi
         local targetPos = targetPart.Position
         local direction = targetPos - origin
 
-        -- [BUG 6 FIX] origin ชน target เกือบเป๊ะ = มองเห็นอยู่แล้ว
         local distToTarget = direction.Magnitude
         if distToTarget < 0.05 then return true end
 
@@ -1140,7 +1054,6 @@ function VisibilityService:CheckVisibility(targetCharacter, pierceCount, specifi
 
                 if not okRay or not result then return true end
 
-                -- [v3.10-PERF] ลำแสงโดนภายใน 3 ซม.จากจุดเล็ง = เส้นถึงตัวแล้ว → จบทันที
                 local hitDist = result.Distance
                 if math.abs(hitDist - distToTarget) < 0.03 then return true end
 
@@ -1208,7 +1121,6 @@ local function isValidEnemy(player)
         local humanoid, root = entry.Humanoid, entry.Root
         if not humanoid or humanoid.Health <= 0 then return false end
         if not root or root.Parent ~= entry.Character then return false end
-        
         local nowFF = os.clock()
         if nowFF >= (entry.FFCheckUntil or 0) then
                 entry.HasForceField = entry.Character:FindFirstChildOfClass("ForceField") ~= nil
@@ -1227,21 +1139,22 @@ CleanupManager:AddConn("PlayerRemovingCaches", Players.PlayerRemoving:Connect(fu
         PlayerCache[player] = nil
 end))
 
-local TARGET_GRACE = 0.25    
-local KEEP_HYSTERESIS = 1.35 
-local ZOOM_TAU = 0.08        
+local TARGET_GRACE = 0.25
+local KEEP_HYSTERESIS = 1.35
+local ZOOM_TAU = 0.08
 local targetGraceUntil = 0
 local zoomSmoothed = nil
 local keepWallCheckUntil, keepWallVisible = 0, true
 
 local SWITCH_COOLDOWN = 0.30
-local switchAwayKey = nil      
+local switchAwayKey = nil
 local switchCooldownUntil = 0
-local SWITCH_RATIO = 0.50          
-local SWITCH_CHECK_INTERVAL = 0.05 
+local SWITCH_RATIO = 0.50
+local SWITCH_CHECK_INTERVAL = 0.05
 local lastSwitchCheck = 0
 local ACQUIRE_INTERVAL = 1 / 30
 local lastAcquireAt = 0
+
 -- ==========================================
 -- 6. TARGET SERVICE (State Machine)
 -- ==========================================
@@ -1272,15 +1185,15 @@ function TargetService:GetTargetPart(char)
                 self.LockedPartName = name
                 return picked
         end
-        return root 
+        return root
 end
 
 function TargetService:ReleaseTarget()
         self.CurrentTarget = nil
         self.TargetPart = nil
         self.LockedPartName = nil
-        targetGraceUntil = 0 
-        keepWallCheckUntil = 0 
+        targetGraceUntil = 0
+        keepWallCheckUntil = 0
         keepWallVisible = true
 end
 
@@ -1402,9 +1315,9 @@ function TargetService:CheckSwitch(camera, screenX, screenY, scaledFOV)
                 switchCooldownUntil = now + SWITCH_COOLDOWN
                 self.CurrentTarget = bestPlayer
                 self.TargetPart = bestPart
-                self.LockedPartName = nil 
+                self.LockedPartName = nil
                 targetGraceUntil = 0
-                keepWallCheckUntil = 0 
+                keepWallCheckUntil = 0
                 keepWallVisible = true
         end
 end
@@ -1412,17 +1325,17 @@ end
 -- ==========================================
 -- 7. ADVANCED PREDICTION ENGINE
 -- ==========================================
-local TargetStates = setmetatable({}, { __mode = "k" }) 
+local TargetStates = setmetatable({}, { __mode = "k" })
 local MAX_SAMPLE_DT = 0.1
 local MAX_PREDICTION_TIME = 5.0
 
-local MAX_DV_PER_SAMPLE = 35   
-local SPIKE_COOLDOWN = 0.15    
-local MAX_ACCEL = 200          
-local ACCEL_TAU_BASE = 0.10    
-local MAX_ACCEL_LEAD = 12      
-local VEL_TAU = 0.05           
-local VELOCITY_SANITY = 3000   
+local MAX_DV_PER_SAMPLE = 35
+local SPIKE_COOLDOWN = 0.15
+local MAX_ACCEL = 200
+local ACCEL_TAU_BASE = 0.10
+local MAX_ACCEL_LEAD = 12
+local VEL_TAU = 0.05
+local VELOCITY_SANITY = 3000
 
 local function clampAccelLead(v3, cap)
         local m = v3.Magnitude
@@ -1478,9 +1391,9 @@ local function getTargetAcceleration(kinPart, targetVel, currentTime)
                         lastVelocity = targetVel,
                         lastTime = currentTime,
                         smoothedAcceleration = Vector3.zero,
-                        smoothedVelocity = targetVel, 
-                        lastPredictionTime = nil, 
-                        spikeUntil = 0,           
+                        smoothedVelocity = targetVel,
+                        lastPredictionTime = nil,
+                        spikeUntil = 0,
                         samples = 1
                 }
                 return Vector3.zero, targetVel
@@ -1498,8 +1411,8 @@ local function getTargetAcceleration(kinPart, targetVel, currentTime)
                 state.lastVelocity = targetVel
                 state.lastTime = currentTime
                 state.smoothedAcceleration = Vector3.zero
-                state.smoothedVelocity = targetVel 
-                state.lastPredictionTime = nil 
+                state.smoothedVelocity = targetVel
+                state.lastPredictionTime = nil
                 state.spikeUntil = 0
                 return Vector3.zero, targetVel
         end
@@ -1508,7 +1421,7 @@ local function getTargetAcceleration(kinPart, targetVel, currentTime)
         state.lastTime = currentTime
         state.samples += 1
 
-        local velAlpha = 1 - math.exp(-dt / VEL_TAU) 
+        local velAlpha = 1 - math.exp(-dt / VEL_TAU)
 
         if currentTime < state.spikeUntil then
                 state.smoothedAcceleration = Vector3.zero
@@ -1546,7 +1459,7 @@ local function solveInterceptVector(shooterPos, targetPart, bulletSpeed, bulletG
         if typeof(bulletGravityVec) ~= "Vector3" then return nil end
         if not targetPart or not targetPart:IsA("BasePart") then return nil end
 
-        local dt = deltaTime or (1 / 60) 
+        local dt = deltaTime or (1 / 60)
         local currentTime = os.clock()
         local targetPos = targetPart.Position
 
@@ -1644,8 +1557,8 @@ end
 -- ==========================================
 -- 8. ESP SERVICE (Throttle 30Hz, Ref-Cached)
 -- ==========================================
-ESPService = { 
-        Cache = {}, 
+ESPService = {
+        Cache = {},
         COLOR_VISIBLE = Color3.fromRGB(0, 255, 128),
         COLOR_OBSTRUCTED = Color3.fromRGB(255, 50, 50),
         OUTLINE_VISIBLE = Color3.fromRGB(255, 215, 0),
@@ -1664,7 +1577,7 @@ local function destroyEntryVisuals(entry)
                 pcall(entry.NameTag.Destroy, entry.NameTag)
                 entry.NameTag = nil
         end
-        entry.Label = nil 
+        entry.Label = nil
         entry.ShownVisible = nil
 end
 
@@ -1709,7 +1622,7 @@ local function buildNameTag(char, head, text)
         nameTag.Size = UDim2.new(0, 150, 0, 30)
         nameTag.StudsOffset = Vector3.new(0, 2, 0)
         nameTag.AlwaysOnTop = true
-        nameTag.MaxDistance = 1500 
+        nameTag.MaxDistance = 1500
 
         local textLabel = Instance.new("TextLabel")
         textLabel.Name = "TagLabel"
@@ -1723,7 +1636,7 @@ local function buildNameTag(char, head, text)
         textLabel.Parent = nameTag
 
         nameTag.Parent = char
-        ESPRegistry[nameTag] = true 
+        ESPRegistry[nameTag] = true
         return nameTag
 end
 
@@ -1760,7 +1673,7 @@ function ESPService:ProcessESP()
                                 if not isEnemy or (not State.ESP and not State.ESPName) then
                                         if entry.Highlight then entry.Highlight:Destroy(); entry.Highlight = nil end
                                         if entry.NameTag then entry.NameTag:Destroy(); entry.NameTag = nil end
-                                        entry.Label = nil 
+                                        entry.Label = nil
                                         entry.ShownVisible = nil
                                 else
                                         if now - entry.LastCheck >= 0.35 then
@@ -1873,7 +1786,7 @@ task.spawn(function()
                                 if entry.NameTag then owned[entry.NameTag] = true end
                         end
                 end
-                if owned == nil then continue end 
+                if owned == nil then continue end
                 for inst in pairs(ESPRegistry) do
                         if inst.Parent and not (owned and owned[inst]) then
                                 ESPRegistry[inst] = nil
@@ -1893,7 +1806,6 @@ task.spawn(function()
                 end
         end
 end)
-
 -- ==========================================
 -- 9. MAIN CAMERA ENGINE
 -- ==========================================
@@ -1916,7 +1828,7 @@ FOVCircle.Thickness = 1.5
 FOVCircle.Color = Color3.fromRGB(255, 255, 255)
 FOVCircle.Filled = false
 FOVCircle.Transparency = 0.7
-FOVCircle.NumSides = 64 
+FOVCircle.NumSides = 64
 FOVCircle.Visible = false
 CleanupManager:AddDrawing("FOVCircle", FOVCircle)
 
@@ -1930,15 +1842,15 @@ end
 print(M8)
 
 local flickUntil = 0
-local flickArmStart = nil 
-local FLICK_ARM = 0.06    
+local flickArmStart = nil
+local FLICK_ARM = 0.06
 local prevReadLook = nil
 local lastWriteLook = nil
-local FLICK_HOLD = 0.10          
-local STEER_DPS = 30             
-local STEER_HOLD = 0.22          
-local STEER_MIN_INFLUENCE = 0.15 
-local STEER_TAU = 0.07           
+local FLICK_HOLD = 0.10
+local STEER_DPS = 30
+local STEER_HOLD = 0.22
+local STEER_MIN_INFLUENCE = 0.15
+local STEER_TAU = 0.07
 
 local steerInfluence = 1
 local steerHoldStart = nil
@@ -1946,7 +1858,7 @@ local prevErrDeg = nil
 
 local lastRenderTick = os.clock()
 local renderErrStreak = 0
-local function renderTick(deltaTime) 
+local function renderTick(deltaTime)
         local camera = getCamera()
         if not camera then return end
 
@@ -1987,10 +1899,10 @@ local function renderTick(deltaTime)
         if userDps == math.huge then userDps = 0 end
         prevReadLook = userLook
         lastWriteLook = nil
-        end 
-        local nowClock = os.clock() 
+        end
+        local nowClock = os.clock()
 
-        if State.DragSwitch and userDps > (State.FlickSpeed or 90) then 
+        if State.DragSwitch and userDps > (State.FlickSpeed or 90) then
                 if not flickArmStart then flickArmStart = nowClock end
                 if nowClock - flickArmStart >= FLICK_ARM then
                         flickUntil = nowClock + FLICK_HOLD
@@ -2076,10 +1988,8 @@ local function renderTick(deltaTime)
         local targetPart = TargetService.TargetPart
         if TargetService.CurrentTarget and targetPart and targetPart.Parent then
                 local shooterPos = camera.CFrame.Position
-
-                local zoomScale = zoomSmoothed 
+                local zoomScale = zoomSmoothed
                 local baseRate = (10 + State.Smoothness * 30) * zoomScale
-
                 local leadTau = State.LagComp and math.min(1 / baseRate, 0.15) or 0
                 local targetPos = getPredictedPosition(targetPart, shooterPos, deltaTime, leadTau, zoomScale)
 
@@ -2119,13 +2029,12 @@ local function renderTick(deltaTime)
                                 local ok, newCFrame = pcall(CFrame.lookAt, shooterPos, shooterPos + smoothDirection)
                                 if ok and newCFrame then
                                         camera.CFrame = newCFrame
-                                        lastWriteLook = smoothDirection 
+                                        lastWriteLook = smoothDirection
                                 end
                         end
                         prevErrDeg = errDeg
                 end
         end
-
 end
 
 local function connectRenderLoop()
@@ -2148,7 +2057,7 @@ end
 connectRenderLoop()
 
 -- ==========================================
--- 11. LOAD REPORT (v3.7 — สรุปสถานะการโหลด + watchdog + FPS meter)
+-- 11. LOAD REPORT & WATCHDOG
 -- ==========================================
 setGlxStatus(M5)
 
@@ -2216,4 +2125,4 @@ do
                 end
         end))
 end
-     
+
